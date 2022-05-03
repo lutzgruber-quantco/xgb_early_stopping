@@ -1,0 +1,111 @@
+---
+title: "xgboost early stopping"
+author: "Lutz Gruber"
+date: "`r lubridate::today()`"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+set.seed(987654)
+df = tibble::tibble(
+  x = rnorm(100),
+  y = x + rnorm(100, sd = .1)
+)
+
+training_rows = sample(x = nrow(df), size = .8 * nrow(df))
+
+dm = xgboost::xgb.DMatrix(
+  data = as.matrix(df |> dplyr::select(x)),
+  label = df$y
+)
+
+dm_train = xgboost::slice(dm, training_rows)
+dm_valid = xgboost::slice(dm, setdiff(1:nrow(df), training_rows))
+
+set.seed(123)
+mdl_early_stopping = xgboost::xgb.train(
+  obj = function(preds, dtrain) {
+    message("obj([", paste0(preds[1:5], collapse = ", "), ", ...])")
+    
+    residual = preds - xgboost::getinfo(dtrain, "label")
+    
+    return(
+      list(
+        grad = 2 * residual,
+        hess = 2 * rep(1, length(residual))
+      )
+    )
+  },
+  feval = function(preds, dtrain) {
+    message("feval([", paste0(preds[1:5], collapse = ", "), ", ...])")
+    
+    residual = preds - xgboost::getinfo(dtrain, "label")
+    
+    return(
+      list(
+        metric = "MSE",
+        value = mean(residual^2)
+      )
+    )
+  },
+  data = dm_train,
+  watchlist = list(train = dm_train, valid = dm_valid),
+  nrounds = 40,
+  early_stopping_rounds = 20,
+  maximize = FALSE
+)
+
+set.seed(123)
+mdl_full = xgboost::xgb.train(
+  obj = function(preds, dtrain) {
+    message("obj([", paste0(preds[1:5], collapse = ", "), ", ...])")
+    
+    residual = preds - xgboost::getinfo(dtrain, "label")
+    
+    return(
+      list(
+        grad = 2 * residual,
+        hess = 2 * rep(1, length(residual))
+      )
+    )
+  },
+  feval = function(preds, dtrain) {
+    message("feval([", paste0(preds[1:5], collapse = ", "), ", ...])")
+    
+    residual = preds - xgboost::getinfo(dtrain, "label")
+    
+    return(
+      list(
+        metric = "MSE",
+        value = mean(residual^2)
+      )
+    )
+  },
+  data = dm_train,
+  watchlist = list(train = dm_train, valid = dm_valid),
+  nrounds = 40
+)
+
+dplyr::bind_rows(
+  mdl_full$evaluation_log |>
+    dplyr::mutate(
+      early_stopping = "no"
+    ),
+  mdl_early_stopping$evaluation_log |>
+    dplyr::mutate(
+      early_stopping = "yes"
+    )
+) |>
+  tidyr::pivot_longer(cols = c(train_MSE, valid_MSE), values_to = "loss") |>
+  ggplot2::ggplot(ggplot2::aes(iter, loss, color = early_stopping)) +
+  ggplot2::geom_point() +
+  ggplot2::geom_line() +
+  ggplot2::scale_y_log10() +
+  ggplot2::coord_cartesian(ylim = c(.0005, .08)) +
+  ggplot2::facet_wrap(~name) +
+  ggplot2::theme(legend.position = "bottom")
+```
